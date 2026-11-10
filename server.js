@@ -128,17 +128,22 @@ async function deleteSession(token) {
 }
 
 const SESSION_COOKIE = 'manus-session';
+const localSessions = {};
 
 function genId() { return crypto.randomBytes(32).toString('hex'); }
 
 function getAdminToken(req) {
   const auth = req.headers.authorization;
   if (auth && auth.startsWith('Bearer ')) return auth.slice(7);
-  return req.cookies && req.cookies[SESSION_COOKIE];
+  if (req.cookies && req.cookies[SESSION_COOKIE]) return req.cookies[SESSION_COOKIE];
+  if (req.query && req.query.token) return req.query.token;
+  return null;
 }
 
 async function isAdmin(req) {
   const token = getAdminToken(req);
+  if (!token) return false;
+  if (localSessions[token]) return true;
   return await checkSession(token);
 }
 
@@ -161,8 +166,13 @@ function unwrapInput(raw) {
 let dbReady = false;
 app.use(async (req, res, next) => {
   if (!dbReady) {
-    await initDB();
-    dbReady = true;
+    try {
+      await initDB();
+      await loadData();
+      dbReady = true;
+    } catch (e) {
+      console.error('DB init middleware failed:', e.message);
+    }
   }
   next();
 });
@@ -177,8 +187,12 @@ async function handleProcedure(fullPath, rawInput, req, res) {
       if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
         const token = genId();
         await saveSession(token);
+        localSessions[token] = true;
         if (res) {
-          res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 86400000 });
+          const cookieOpts = { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 86400000 };
+          if (IS_VERCEL) cookieOpts.secure = true;
+          res.cookie(SESSION_COOKIE, token, cookieOpts);
+          res.cookie(SESSION_COOKIE + '-pub', token, { httpOnly: false, sameSite: 'lax', path: '/', maxAge: 86400000, ...(IS_VERCEL ? { secure: true } : {}) });
         }
         return { isAdmin: true, token };
       }
@@ -187,8 +201,12 @@ async function handleProcedure(fullPath, rawInput, req, res) {
 
     case 'logout': {
       const token = getAdminToken(req);
+      if (token) delete localSessions[token];
       await deleteSession(token);
-      if (res) res.clearCookie(SESSION_COOKIE);
+      if (res) {
+        res.clearCookie(SESSION_COOKIE);
+        res.clearCookie(SESSION_COOKIE + '-pub');
+      }
       return { success: true };
     }
 
@@ -538,7 +556,16 @@ app.post('/api/heartbeat', async (req, res) => {
 });
 
 app.get('/api/oauth/callback', (req, res) => {
-  res.redirect('/admin/dashboard');
+  const token = req.query.token || (req.cookies && req.cookies[SESSION_COOKIE]);
+  if (token) {
+    const cookieOpts = { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 86400000 };
+    if (IS_VERCEL) cookieOpts.secure = true;
+    res.cookie(SESSION_COOKIE, token, cookieOpts);
+    res.cookie(SESSION_COOKIE + '-pub', token, { httpOnly: false, sameSite: 'lax', path: '/', maxAge: 86400000, ...(IS_VERCEL ? { secure: true } : {}) });
+    res.send(`<!DOCTYPE html><html><head><script>sessionStorage.setItem("manus-cookie","manus-session=${token}");window.location.replace("/admin/dashboard");</script></head><body></body></html>`);
+  } else {
+    res.redirect('/admin/dashboard');
+  }
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
