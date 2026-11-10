@@ -2,7 +2,6 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
-const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,15 +10,8 @@ const IS_VERCEL = !!process.env.VERCEL;
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:R!Yv2Z%23%24nbhxC8!@db.sgcswfefivycflenyoaf.supabase.co:5432/postgres';
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 2,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
-});
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://sgcswfefivycflenyoaf.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
 const ADMIN_USERNAME = 'Admin';
 const ADMIN_PASSWORD = 'Admin1234@@';
@@ -29,25 +21,22 @@ let liveVisitors = [];
 let totalVisitors = 0;
 let adminConfig = { whatsAppLink: '', customMessage: '' };
 
-async function initDB() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS app_data (
-        key TEXT PRIMARY KEY,
-        value JSONB NOT NULL DEFAULT '[]'::jsonb,
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-      )
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS admin_sessions (
-        token TEXT PRIMARY KEY,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours')
-      )
-    `);
-  } catch (e) {
-    console.error('initDB failed:', e.message);
+async function sbFetch(path, opts = {}) {
+  const url = `${SUPABASE_URL}/rest/v1/${path}`;
+  const headers = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Content-Type': 'application/json',
+    ...opts.headers
+  };
+  const res = await fetch(url, { ...opts, headers });
+  if (opts.method === 'DELETE' || opts.method === 'PATCH' || opts.method === 'POST') {
+    if (opts.headers && opts.headers['Prefer'] && opts.headers['Prefer'].includes('return=representation')) {
+      return res.json();
+    }
+    return null;
   }
+  return res.json();
 }
 
 let lastLoadTime = 0;
@@ -57,13 +46,15 @@ async function loadData(force) {
   const now = Date.now();
   if (!force && lastLoadTime && (now - lastLoadTime) < LOAD_CACHE_MS) return;
   try {
-    const res = await pool.query('SELECT key, value FROM app_data');
-    for (const row of res.rows) {
-      switch (row.key) {
-        case 'applications': applications = row.value || []; break;
-        case 'visitors': liveVisitors = row.value || []; break;
-        case 'total_visitors': totalVisitors = (typeof row.value === 'number') ? row.value : 0; break;
-        case 'admin_config': adminConfig = row.value || { whatsAppLink: '', customMessage: '' }; break;
+    const rows = await sbFetch('app_data?select=key,value');
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        switch (row.key) {
+          case 'applications': applications = row.value || []; break;
+          case 'visitors': liveVisitors = row.value || []; break;
+          case 'total_visitors': totalVisitors = (typeof row.value === 'number') ? row.value : 0; break;
+          case 'admin_config': adminConfig = row.value || { whatsAppLink: '', customMessage: '' }; break;
+        }
       }
     }
     lastLoadTime = Date.now();
@@ -74,17 +65,18 @@ async function loadData(force) {
 
 async function saveData() {
   try {
-    await pool.query(`
-      INSERT INTO app_data (key, value, updated_at) VALUES
-        ('applications', $1::jsonb, NOW()),
-        ('visitors', $2::jsonb, NOW()),
-        ('total_visitors', $3::jsonb, NOW())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    `, [
-      JSON.stringify(applications),
-      JSON.stringify(liveVisitors),
-      JSON.stringify(totalVisitors)
-    ]);
+    const items = [
+      { key: 'applications', value: applications },
+      { key: 'visitors', value: liveVisitors },
+      { key: 'total_visitors', value: totalVisitors }
+    ];
+    for (const item of items) {
+      await sbFetch('app_data', {
+        method: 'POST',
+        headers: { 'Prefer': 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: item.key, value: item.value, updated_at: new Date().toISOString() })
+      });
+    }
     lastLoadTime = Date.now();
   } catch (e) {
     console.error('saveData failed:', e.message);
@@ -93,10 +85,11 @@ async function saveData() {
 
 async function saveAdmin() {
   try {
-    await pool.query(`
-      INSERT INTO app_data (key, value, updated_at) VALUES ('admin_config', $1::jsonb, NOW())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    `, [JSON.stringify(adminConfig)]);
+    await sbFetch('app_data', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ key: 'admin_config', value: adminConfig, updated_at: new Date().toISOString() })
+    });
   } catch (e) {
     console.error('saveAdmin failed:', e.message);
   }
@@ -104,24 +97,25 @@ async function saveAdmin() {
 
 async function saveSession(token) {
   try {
-    await pool.query(
-      `INSERT INTO admin_sessions (token, created_at, expires_at) VALUES ($1, NOW(), NOW() + INTERVAL '24 hours') ON CONFLICT (token) DO NOTHING`,
-      [token]
-    );
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    await sbFetch('admin_sessions', {
+      method: 'POST',
+      headers: { 'Prefer': 'resolution=merge-duplicates' },
+      body: JSON.stringify({ token, created_at: new Date().toISOString(), expires_at: expiresAt })
+    });
   } catch (e) {
     console.error('saveSession failed:', e.message);
   }
 }
 
+const localSessions = {};
+
 async function checkSession(token) {
   if (!token) return false;
   if (localSessions[token]) return true;
   try {
-    const res = await pool.query(
-      `SELECT token FROM admin_sessions WHERE token = $1 AND expires_at > NOW()`,
-      [token]
-    );
-    if (res.rows.length > 0) {
+    const rows = await sbFetch(`admin_sessions?token=eq.${token}&expires_at=gt.${new Date().toISOString()}&select=token`);
+    if (Array.isArray(rows) && rows.length > 0) {
       localSessions[token] = true;
       return true;
     }
@@ -135,14 +129,13 @@ async function checkSession(token) {
 async function deleteSession(token) {
   if (!token) return;
   try {
-    await pool.query(`DELETE FROM admin_sessions WHERE token = $1`, [token]);
+    await sbFetch(`admin_sessions?token=eq.${token}`, { method: 'DELETE' });
   } catch (e) {
     console.error('deleteSession failed:', e.message);
   }
 }
 
 const SESSION_COOKIE = 'manus-session';
-const localSessions = {};
 
 function genId() { return crypto.randomBytes(32).toString('hex'); }
 
@@ -176,16 +169,14 @@ function unwrapInput(raw) {
   return raw;
 }
 
-// Init DB on first request
 let dbReady = false;
 app.use(async (req, res, next) => {
   if (!dbReady) {
     try {
-      await initDB();
       await loadData(true);
       dbReady = true;
     } catch (e) {
-      console.error('DB init middleware failed:', e.message);
+      console.error('Init load failed:', e.message);
     }
   }
   next();
@@ -571,9 +562,8 @@ app.post('/api/heartbeat', async (req, res) => {
 
 app.get('/api/debug-session', async (req, res) => {
   try {
-    const r1 = await pool.query('SELECT token, created_at, expires_at FROM admin_sessions LIMIT 10');
-    const r2 = await pool.query('SELECT NOW() as now');
-    res.json({ sessions: r1.rows, dbNow: r2.rows[0].now, localSessions: Object.keys(localSessions), dbReady });
+    const sessions = await sbFetch('admin_sessions?select=token,created_at,expires_at&limit=10');
+    res.json({ sessions, localSessions: Object.keys(localSessions), dbReady, method: 'rest-api' });
   } catch (e) {
     res.json({ error: e.message, localSessions: Object.keys(localSessions), dbReady });
   }
@@ -599,7 +589,7 @@ app.get('*', (req, res) => {
 });
 
 if (!IS_VERCEL) {
-  initDB().then(() => loadData()).then(() => {
+  loadData(true).then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
