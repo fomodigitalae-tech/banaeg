@@ -16,7 +16,9 @@ const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:R!Yv2Z%2
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 3,
+  max: 2,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
 });
 
 const ADMIN_USERNAME = 'Admin';
@@ -48,7 +50,12 @@ async function initDB() {
   }
 }
 
-async function loadData() {
+let lastLoadTime = 0;
+const LOAD_CACHE_MS = 3000;
+
+async function loadData(force) {
+  const now = Date.now();
+  if (!force && lastLoadTime && (now - lastLoadTime) < LOAD_CACHE_MS) return;
   try {
     const res = await pool.query('SELECT key, value FROM app_data');
     for (const row of res.rows) {
@@ -59,6 +66,7 @@ async function loadData() {
         case 'admin_config': adminConfig = row.value || { whatsAppLink: '', customMessage: '' }; break;
       }
     }
+    lastLoadTime = Date.now();
   } catch (e) {
     console.error('loadData failed:', e.message);
   }
@@ -77,6 +85,7 @@ async function saveData() {
       JSON.stringify(liveVisitors),
       JSON.stringify(totalVisitors)
     ]);
+    lastLoadTime = Date.now();
   } catch (e) {
     console.error('saveData failed:', e.message);
   }
@@ -106,15 +115,20 @@ async function saveSession(token) {
 
 async function checkSession(token) {
   if (!token) return false;
+  if (localSessions[token]) return true;
   try {
     const res = await pool.query(
       `SELECT token FROM admin_sessions WHERE token = $1 AND expires_at > NOW()`,
       [token]
     );
-    return res.rows.length > 0;
+    if (res.rows.length > 0) {
+      localSessions[token] = true;
+      return true;
+    }
+    return false;
   } catch (e) {
     console.error('checkSession failed:', e.message);
-    return false;
+    return localSessions[token] || false;
   }
 }
 
@@ -168,7 +182,7 @@ app.use(async (req, res, next) => {
   if (!dbReady) {
     try {
       await initDB();
-      await loadData();
+      await loadData(true);
       dbReady = true;
     } catch (e) {
       console.error('DB init middleware failed:', e.message);
