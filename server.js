@@ -20,13 +20,12 @@ const pool = new Pool({
 });
 
 const ADMIN_USERNAME = 'Admin';
-const ADMIN_PASSWORD = 'JAFAR';
+const ADMIN_PASSWORD = 'Admin1234@@';
 
 let applications = [];
 let liveVisitors = [];
 let totalVisitors = 0;
 let adminConfig = { whatsAppLink: '', customMessage: '' };
-let dataLoaded = false;
 
 async function initDB() {
   try {
@@ -35,6 +34,13 @@ async function initDB() {
         key TEXT PRIMARY KEY,
         value JSONB NOT NULL DEFAULT '[]'::jsonb,
         updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS admin_sessions (
+        token TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours')
       )
     `);
   } catch (e) {
@@ -49,11 +55,10 @@ async function loadData() {
       switch (row.key) {
         case 'applications': applications = row.value || []; break;
         case 'visitors': liveVisitors = row.value || []; break;
-        case 'total_visitors': totalVisitors = (typeof row.value === 'number') ? row.value : (row.value?.count || 0); break;
+        case 'total_visitors': totalVisitors = (typeof row.value === 'number') ? row.value : 0; break;
         case 'admin_config': adminConfig = row.value || { whatsAppLink: '', customMessage: '' }; break;
       }
     }
-    dataLoaded = true;
   } catch (e) {
     console.error('loadData failed:', e.message);
   }
@@ -88,16 +93,40 @@ async function saveAdmin() {
   }
 }
 
-// Load data from DB before handling requests
-app.use(async (req, res, next) => {
-  if (!dataLoaded) {
-    await initDB();
-    await loadData();
+async function saveSession(token) {
+  try {
+    await pool.query(
+      `INSERT INTO admin_sessions (token, created_at, expires_at) VALUES ($1, NOW(), NOW() + INTERVAL '24 hours') ON CONFLICT (token) DO NOTHING`,
+      [token]
+    );
+  } catch (e) {
+    console.error('saveSession failed:', e.message);
   }
-  next();
-});
+}
 
-const adminSessions = {};
+async function checkSession(token) {
+  if (!token) return false;
+  try {
+    const res = await pool.query(
+      `SELECT token FROM admin_sessions WHERE token = $1 AND expires_at > NOW()`,
+      [token]
+    );
+    return res.rows.length > 0;
+  } catch (e) {
+    console.error('checkSession failed:', e.message);
+    return false;
+  }
+}
+
+async function deleteSession(token) {
+  if (!token) return;
+  try {
+    await pool.query(`DELETE FROM admin_sessions WHERE token = $1`, [token]);
+  } catch (e) {
+    console.error('deleteSession failed:', e.message);
+  }
+}
+
 const SESSION_COOKIE = 'manus-session';
 
 function genId() { return crypto.randomBytes(32).toString('hex'); }
@@ -108,9 +137,9 @@ function getAdminToken(req) {
   return req.cookies && req.cookies[SESSION_COOKIE];
 }
 
-function isAdmin(req) {
+async function isAdmin(req) {
   const token = getAdminToken(req);
-  return token && adminSessions[token] === true;
+  return await checkSession(token);
 }
 
 function getActiveIds() {
@@ -128,6 +157,16 @@ function unwrapInput(raw) {
   return raw;
 }
 
+// Init DB on first request
+let dbReady = false;
+app.use(async (req, res, next) => {
+  if (!dbReady) {
+    await initDB();
+    dbReady = true;
+  }
+  next();
+});
+
 async function handleProcedure(fullPath, rawInput, req, res) {
   const procedure = fullPath.replace(/^(admin|applications)\./, '');
   const input = unwrapInput(rawInput);
@@ -137,7 +176,7 @@ async function handleProcedure(fullPath, rawInput, req, res) {
       const { username, password } = input;
       if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
         const token = genId();
-        adminSessions[token] = true;
+        await saveSession(token);
         if (res) {
           res.cookie(SESSION_COOKIE, token, { httpOnly: true, sameSite: 'lax', path: '/', maxAge: 86400000 });
         }
@@ -148,13 +187,13 @@ async function handleProcedure(fullPath, rawInput, req, res) {
 
     case 'logout': {
       const token = getAdminToken(req);
-      if (token) delete adminSessions[token];
+      await deleteSession(token);
       if (res) res.clearCookie(SESSION_COOKIE);
       return { success: true };
     }
 
     case 'checkSession': {
-      return { isAdmin: isAdmin(req) };
+      return { isAdmin: await isAdmin(req) };
     }
 
     case 'getApplications': {
