@@ -12,6 +12,6 @@
     "vite": "5.4.10"
   },
   "dependencies": {
-    "mysql2": "3.11.3"
+    "@vercel/postgres": "0.10.0"
   }
 }

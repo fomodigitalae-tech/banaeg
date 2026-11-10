@@ -1,4 +1,5 @@
-import { getDatabasePool, ensureSchema, isAdmin } from '../_db.js';
+import { sql } from '@vercel/postgres';
+import { ensureSchema, isAdmin } from '../_db.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'PATCH') return res.status(405).json({ error: 'method_not_allowed' });
@@ -10,7 +11,7 @@ export default async function handler(req, res) {
   }
   try {
     await ensureSchema();
-    await getDatabasePool().execute('UPDATE orders SET status = ? WHERE id = ?', [status, req.query.id]);
+    await sql`UPDATE orders SET status = ${status} WHERE id = ${req.query.id}`;
     res.json({ ok: true });
   } catch (error) {
     console.error('Order update failed:', error.message);
