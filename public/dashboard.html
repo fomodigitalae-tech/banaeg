@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>لوحة طلبات ساعة الأهلي</title>
+<style>
+:root{--green:#087a47;--green-dark:#075d39;--ink:#1d2a25;--muted:#718078;--surface:#f4f7f4;--line:#e0e8e2;--orange:#ef8a2d}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--surface);font-family:Arial,"Cairo",sans-serif}.shell{min-height:100vh}.header{background:#fff;border-bottom:1px solid var(--line)}.header-inner{width:min(1180px,calc(100% - 34px));height:82px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{display:flex;align-items:center;gap:10px;color:var(--green-dark)}.mark{width:38px;height:38px;display:grid;place-items:center;border:3px solid var(--green);border-radius:11px 11px 11px 3px;color:var(--orange);font-size:20px;background:#eff8f2}.brand strong{display:block;font-size:15px}.brand small{display:block;margin-top:3px;color:var(--green);font-size:8px;letter-spacing:.4px}.logout{border:0;border-radius:9px;padding:10px 14px;color:var(--green-dark);background:#edf5ef;font-weight:700;cursor:pointer}.main{width:min(1180px,calc(100% - 34px));margin:0 auto;padding:42px 0 70px}.eyebrow{color:var(--orange);font-size:12px;font-weight:800}.title-row{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.title-row h1{margin:8px 0 0;font-size:37px;letter-spacing:-1.5px}.title-row p{margin:0;color:var(--muted);font-size:12px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:30px 0 24px}.stat{padding:20px 22px;border:1px solid var(--line);border-radius:16px;background:#fff;box-shadow:0 10px 30px rgba(5,64,38,.05)}.stat span{display:block;color:var(--muted);font-size:11px}.stat strong{display:block;margin-top:7px;color:var(--green-dark);font-size:29px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:0 16px 40px rgba(5,64,38,.06)}table{width:100%;min-width:850px;border-collapse:collapse}th,td{padding:17px 15px;border-bottom:1px solid #edf0ed;text-align:right;font-size:12px;white-space:nowrap}th{color:var(--muted);background:#fbfcfb;font-size:10px;font-weight:700}tr:last-child td{border-bottom:0}.customer{font-weight:800}.customer small{display:block;margin-top:4px;color:var(--muted);font-weight:400}.watch{display:flex;align-items:center;gap:8px}.dot{width:10px;height:10px;border-radius:50%;background:var(--green)}.dot.روز{background:#c59b91}.dot.أسود{background:#222}.dot.أبيض{background:#d5dcd7;border:1px solid #bac4bd}.status{padding:7px 9px;border:1px solid var(--line);border-radius:8px;color:var(--green-dark);background:#f8fbf8;font-size:10px}.empty,.error{padding:60px 20px;text-align:center;color:var(--muted)}.loading{padding:50px;text-align:center;color:var(--muted)}
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-box{background:#fff;border:1px solid var(--line);border-radius:24px;padding:48px 40px;width:100%;max-width:420px;box-shadow:0 25px 60px rgba(0,0,0,.08);text-align:center}
+.login-box h1{font-size:24px;font-weight:800;margin:16px 0 6px;color:var(--green-dark)}
+.login-box .sub{color:var(--muted);font-size:13px;margin-bottom:32px}
+.login-box input{width:100%;padding:14px 18px;border:1.5px solid var(--line);border-radius:12px;font-size:15px;text-align:center;outline:none;margin-bottom:16px;background:#fbfcfb;color:var(--ink)}
+.login-box input:focus{border-color:var(--green)}
+.login-box button{width:100%;padding:14px;background:var(--green);color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer}
+.login-box button:hover{background:var(--green-dark)}
+.login-err{color:#dc2626;font-size:12px;margin-bottom:10px;display:none}
+@media(max-width:650px){.main{padding-top:28px}.title-row{display:block}.title-row h1{font-size:31px}.title-row p{margin-top:8px}.stats{gap:8px}.stat{padding:15px 11px}.stat strong{font-size:23px}.stat span{font-size:9px}.header-inner{height:70px}.brand strong{font-size:13px}}
+</style>
+</head>
+<body>
+
+<div class="login-wrap" id="loginScreen">
+  <div class="login-box">
+    <div style="font-size:48px">⌾</div>
+    <h1>لوحة الإدارة</h1>
+    <p class="sub">أدخل كلمة المرور للوصول إلى لوحة التحكم</p>
+    <div class="login-err" id="loginErr">كلمة المرور غير صحيحة</div>
+    <input type="password" id="passInput" placeholder="كلمة المرور" autofocus>
+    <button onclick="doLogin()">دخول</button>
+  </div>
+</div>
+
+<div class="shell" id="dashboard" style="display:none">
+  <header class="header"><div class="header-inner">
+    <a class="brand" href="/"><span class="mark">⌾</span><span><strong>لوحة ساعة الأهلي</strong><small>البنك الأهلي المصري</small></span></a>
+    <button class="logout" id="logout">تسجيل الخروج</button>
+  </div></header>
+  <main class="main">
+    <div class="title-row"><div><span class="eyebrow">إدارة الطلبات</span><h1>طلبات الساعات الذكية</h1></div><p id="last-updated">—</p></div>
+    <div class="stats">
+      <div class="stat"><span>إجمالي الطلبات</span><strong id="total">—</strong></div>
+      <div class="stat"><span>طلبات جديدة</span><strong id="new-count">—</strong></div>
+      <div class="stat"><span>طلبات اليوم</span><strong id="today-count">—</strong></div>
+    </div>
+    <section class="table-wrap" id="content"><div class="loading">جارٍ تحميل الطلبات...</div></section>
+  </main>
+</div>
+
+<script>
+var TOKEN = localStorage.getItem('admin_token') || '';
+
+function doLogin() {
+  var pw = document.getElementById('passInput').value;
+  fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) {
+      TOKEN = d.token;
+      localStorage.setItem('admin_token', TOKEN);
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+      load();
+    } else {
+      document.getElementById('loginErr').style.display = 'block';
+    }
+  }).catch(function() {
+    document.getElementById('loginErr').style.display = 'block';
+  });
+}
+
+document.getElementById('passInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doLogin();
+});
+
+document.getElementById('logout').addEventListener('click', function() {
+  TOKEN = '';
+  localStorage.removeItem('admin_token');
+  document.getElementById('dashboard').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+});
+
+var content = document.querySelector('#content');
+var fmt = new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium', timeStyle: 'short' });
+var today = new Intl.DateTimeFormat('en-CA').format(new Date());
+var statusLabel = { new: 'جديد', reviewed: 'قيد المراجعة', completed: 'مكتمل' };
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;' }[c];
+  });
+}
+
+function render(orders) {
+  document.querySelector('#total').textContent = orders.length;
+  document.querySelector('#new-count').textContent = orders.filter(function(o) { return o.status === 'new'; }).length;
+  document.querySelector('#today-count').textContent = orders.filter(function(o) { return String(o.createdAt).slice(0, 10) === today; }).length;
+  document.querySelector('#last-updated').textContent = 'آخر تحديث: ' + fmt.format(new Date());
+
+  if (!orders.length) {
+    content.innerHTML = '<div class="empty">لا توجد طلبات حتى الآن.</div>';
+    return;
+  }
+
+  content.innerHTML = '<table><thead><tr><th>العميل</th><th>الهاتف</th><th>الرقم القومي</th><th>الساعة واللون</th><th>وقت الطلب</th><th>الحالة</th></tr></thead><tbody>' +
+    orders.map(function(o) {
+      return '<tr><td class="customer">' + escapeHtml(o.customerName) + '<small>' + escapeHtml(o.middleName) + '</small></td>' +
+        '<td dir="ltr">' + escapeHtml(o.phone) + '</td>' +
+        '<td dir="ltr">' + escapeHtml(o.nationalId) + '</td>' +
+        '<td><span class="watch"><i class="dot ' + escapeHtml(o.watchColor) + '"></i>' + escapeHtml(o.watchName) + ' — ' + escapeHtml(o.watchColor) + '</span></td>' +
+        '<td>' + escapeHtml(fmt.format(new Date(o.createdAt))) + '</td>' +
+        '<td><select class="status" data-id="' + o.id + '">' +
+        Object.keys(statusLabel).map(function(key) {
+          return '<option value="' + key + '"' + (key === o.status ? ' selected' : '') + '>' + statusLabel[key] + '</option>';
+        }).join('') +
+        '</select></td></tr>';
+    }).join('') + '</tbody></table>';
+
+  content.querySelectorAll('.status').forEach(function(select) {
+    select.addEventListener('change', async function() {
+      await fetch('/api/orders/' + select.dataset.id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
+        body: JSON.stringify({ status: select.value })
+      });
+      load();
+    });
+  });
+}
+
+async function load() {
+  if (!TOKEN) return;
+  var response = await fetch('/api/orders', {
+    headers: { 'Authorization': 'Bearer ' + TOKEN }
+  });
+  if (response.status === 401) {
+    TOKEN = '';
+    localStorage.removeItem('admin_token');
+    document.getElementById('dashboard').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    return;
+  }
+  if (!response.ok) {
+    content.innerHTML = '<div class="error">تعذر تحميل الطلبات حاليًا.</div>';
+    return;
+  }
+  var data = await response.json();
+  render(data.orders);
+}
+
+if (TOKEN) {
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  load();
+}
+
+setInterval(function() { if (TOKEN) load(); }, 5000);
+</script>
+</body>
+</html>
