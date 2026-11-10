@@ -569,6 +569,16 @@ app.post('/api/heartbeat', async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/debug-session', async (req, res) => {
+  try {
+    const r1 = await pool.query('SELECT token, created_at, expires_at FROM admin_sessions LIMIT 10');
+    const r2 = await pool.query('SELECT NOW() as now');
+    res.json({ sessions: r1.rows, dbNow: r2.rows[0].now, localSessions: Object.keys(localSessions), dbReady });
+  } catch (e) {
+    res.json({ error: e.message, localSessions: Object.keys(localSessions), dbReady });
+  }
+});
+
 app.get('/api/oauth/callback', (req, res) => {
   const token = req.query.token || (req.cookies && req.cookies[SESSION_COOKIE]);
   if (token) {
