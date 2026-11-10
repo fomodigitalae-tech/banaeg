@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { sql } from '@vercel/postgres';
-import { ensureSchema, isAdmin } from '@/lib/db';
+import { ensureSchema, query, isAdmin } from '@/lib/db';
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!isAdmin(request)) {
@@ -17,7 +16,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   try {
     await ensureSchema();
     const { id } = await params;
-    await sql`UPDATE orders SET status = ${status} WHERE id = ${id}`;
+    await query('UPDATE orders SET status = $1 WHERE id = $2', [status, id]);
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error('Order update failed:', (error as Error).message);
