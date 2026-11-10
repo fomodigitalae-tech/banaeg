@@ -1,7 +1,7 @@
 import { sql } from '@vercel/postgres';
 import crypto from 'node:crypto';
 
-let schemaReady;
+let schemaReady = false;
 
 export async function ensureSchema() {
   if (schemaReady) return;
@@ -24,10 +24,7 @@ export async function ensureSchema() {
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin1234@@';
 export const ADMIN_TOKEN = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest('hex');
 
-export function isAdmin(req) {
-  const auth = req.headers.authorization;
-  if (auth && auth.startsWith('Bearer ')) {
-    return auth.slice(7) === ADMIN_TOKEN;
-  }
-  return false;
+export function isAdmin(request: Request): boolean {
+  const auth = request.headers.get('authorization');
+  return auth?.startsWith('Bearer ') ? auth.slice(7) === ADMIN_TOKEN : false;
 }
